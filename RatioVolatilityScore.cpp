@@ -1,0 +1,64 @@
+/**
+ *  \file RatioVolatilityScore.cpp   \brief Vr score implementation
+ *
+ *  Copyright 2007-2022 IMP Inventors. All rights reserved.
+ *
+ */
+
+#include "RatioVolatilityScore.h"
+#include "ChiScore.h"
+#include <boost/random/uniform_real_distribution.hpp>
+#include <algorithm>
+
+namespace foxs {
+
+
+// TODO: currently assumes uniform sampling of experimental profile
+double RatioVolatilityScore::compute_score(const Profile* exp_profile,
+                                           const Profile* model_profile,
+                                           bool use_offset) const {
+  (void)use_offset;
+  if (model_profile->size() != exp_profile->size()) {
+    throw std::invalid_argument(
+        "RatioVolatilityScore requires profiles with the same q values");
+  }
+
+  double bin_size = PI / dmax_; // default dmax = 400
+  unsigned int number_of_bins = std::floor(exp_profile->get_max_q()/bin_size);
+  // number of profile points in each bin
+  double number_of_points_in_bin = exp_profile->size()/number_of_bins;
+
+  Vector<double> ratio(number_of_bins, 0.0);
+  for (unsigned int i = 0; i < number_of_bins; i++) {
+    unsigned int index1 = algebra::get_rounded(i*number_of_points_in_bin);
+    unsigned int index2 = algebra::get_rounded((i+1)*number_of_points_in_bin);
+    // calculate average intensity in the bin
+    double intensity1(0.0), intensity2(0.0);
+    for (unsigned int j = index1; j<index2; j++) {
+      intensity1 += exp_profile->get_intensity(j);
+      intensity2 += model_profile->get_intensity(j);
+    }
+    intensity1 /= (index2-index1);
+    intensity2 /= (index2-index1);
+    ratio[i] = intensity1/intensity2;
+  }
+
+  double vr = 0;
+  for (unsigned int i = 0; i < (number_of_bins-1); i++) {
+    vr += 2*std::fabs(ratio[i]-ratio[i+1])/(ratio[i]+ratio[i+1]);
+  }
+  return 100*vr/number_of_bins;
+}
+
+
+double RatioVolatilityScore::compute_scale_factor(const Profile* exp_profile,
+                                                  const Profile* model_profile,
+                                                  const double offset) const {
+  ChiScore cs;
+  return cs.compute_scale_factor(exp_profile, model_profile, offset);
+  //double m1 = exp_profile->mean_intensity();
+  //double m2 = model_profile->mean_intensity();
+  //return m1 / m2;
+}
+
+}  // namespace foxs

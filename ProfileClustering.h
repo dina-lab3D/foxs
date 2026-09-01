@@ -1,0 +1,55 @@
+/**
+ * \file ProfileClustering.h
+ * \brief A class for profile clustering
+ *
+ * \authors Dina Schneidman
+ * Copyright 2007-2022 IMP Inventors. All rights reserved.
+ *
+ */
+
+#ifndef FOXS_PROFILE_CLUSTERING_H
+#define FOXS_PROFILE_CLUSTERING_H
+
+#include "Profile.h"
+
+namespace foxs {
+
+/** Class for profile clustering */
+class ProfileClustering {
+public:
+  ProfileClustering(Profile* exp_profile,
+                    const Profiles& profiles,
+                    double chi_percentage = 0.3, double chi_threshold = 0.0);
+
+  ProfileClustering(Profile* exp_profile,
+                    const Profiles& profiles,
+                    const Vector<double>& scores,
+                    double chi_percentage = 0.3, double chi_threshold = 0.0);
+
+  const Vector<Profiles>& get_clusters() const {
+    return clusters_;
+  }
+
+  const Profiles& get_representatives() const {
+    return clustered_profiles_;
+  }
+
+private:
+  void cluster_profiles();
+  void select_representatives();
+
+private:
+  const Profile* exp_profile_;
+  const Profiles profiles_;
+  const Vector<double> scores_;
+
+  Vector<double> chi_scores_;
+  Profiles clustered_profiles_;
+  Vector<Profiles> clusters_;
+  double chi_percentage_;
+  double chi_threshold_;
+};
+
+}  // namespace foxs
+
+#endif /* FOXS_PROFILE_CLUSTERING_H */
