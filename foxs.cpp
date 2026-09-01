@@ -42,6 +42,7 @@ int main(int argc, char** argv) {
   bool score_log = false;
   bool gnuplot_script = false;
   bool explicit_water = false;
+  bool use_gpu = false;
   std::string desc_prefix(
       "Usage: <pdb_file1> <pdb_file2> ... <profile_file1> <profile_file2> ...\n"
       "\nAny number of input PDBs and profiles is supported.\n"
@@ -74,6 +75,7 @@ int main(int argc, char** argv) {
 2 - q values are in 1/A, 3 - q values are in 1/nm")
     ("volatility_ratio,v","calculate volatility ratio score (default = false)")
     ("score_log,l", "use log(intensity) in fitting and scoring (default = false)")
+    ("gpu", "use CUDA for distance-distribution calculation")
     ("gnuplot_script,g", "print gnuplot script for gnuplot viewing (default = false)");
 
   std::string form_factor_table_file;
@@ -135,6 +137,15 @@ constant form factor (default = false)")
   if (vm.count("score_log")) score_log = true;
   if (vm.count("gnuplot_script")) gnuplot_script = true;
   if (vm.count("explicit_water")) explicit_water = true;
+  if (vm.count("gpu")) use_gpu = true;
+
+  if (use_gpu) {
+    std::string reason;
+    if (!Profile::is_gpu_available(&reason)) {
+      std::cerr << "Cannot use --gpu: " << reason << std::endl;
+      return 2;
+    }
+  }
 
   // no water layer or fitting in ab initio mode for now
   if (vm.count("ab_initio")) {
@@ -210,6 +221,11 @@ constant form factor (default = false)")
   } else {
     ft = get_default_form_factor_table();
   }
+  if (use_gpu && reciprocal) {
+    std::cerr << "Cannot use --gpu with reciprocal form-factor tables"
+              << std::endl;
+    return 2;
+  }
 
   // 2. compute profiles for input pdbs
   Profiles profiles;
@@ -220,7 +236,7 @@ constant form factor (default = false)")
     auto profile = std::make_shared<Profile>(compute_profile(
         particles_vec[i], 0.0, max_q, delta_q, ft, ff_type,
         !explicit_water, fit, reciprocal, ab_initio, vacuum,
-        beam_profile_file));
+        beam_profile_file, use_gpu));
 
     // save the profile
     profiles.push_back(profile);

@@ -47,8 +47,9 @@ Profile compute_profile(Molecule<Atom> particles, double min_q,
                         double max_q, double delta_q, FormFactorTable* ft,
                         FormFactorType ff_type, bool hydration_layer, bool fit,
                         bool reciprocal, bool ab_initio, bool vacuum,
-                        std::string beam_profile_file) {
+                        std::string beam_profile_file, bool use_gpu) {
   Profile profile(min_q, max_q, delta_q);
+  profile.set_use_gpu(use_gpu);
   if (reciprocal) profile.set_ff_table(ft);
   if (!beam_profile_file.empty()) profile.set_beam_profile(beam_profile_file);
 

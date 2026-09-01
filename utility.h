@@ -96,7 +96,8 @@ Profile compute_profile(Molecule<Atom> particles,
                          bool reciprocal = false,
                          bool ab_initio = false,
                          bool vacuum = false,
-                         std::string beam_profile_file = "");
+                         std::string beam_profile_file = "",
+                         bool use_gpu = false);
 
 //! Read PDB (or mmCIF) files
 void read_pdb(const std::string& file,

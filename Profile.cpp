@@ -9,6 +9,9 @@
 #include "utility.h"
 #include "internal/exp_function.h"
 #include "internal/sinc_function.h"
+#ifdef FOXS_SAXS_CUDA_LIB
+#include "internal/cuda_helpers.h"
+#endif
 #include <boost/algorithm/string.hpp>
 #include <boost/math/special_functions/sinc.hpp>
 
@@ -21,6 +24,45 @@
 
 namespace foxs {
 
+namespace {
+
+#ifdef FOXS_SAXS_CUDA_LIB
+std::vector<double> flatten_coordinates(
+    const Vector<algebra::Vector3D>& coordinates) {
+  std::vector<double> flattened;
+  flattened.reserve(3 * coordinates.size());
+  for (const algebra::Vector3D& coordinate : coordinates) {
+    flattened.push_back(coordinate[0]);
+    flattened.push_back(coordinate[1]);
+    flattened.push_back(coordinate[2]);
+  }
+  return flattened;
+}
+
+void calculate_distance_distributions_on_gpu(
+    const Vector<algebra::Vector3D>& coordinates1,
+    const std::vector<std::vector<double>>& form_factors1,
+    const Vector<algebra::Vector3D>& coordinates2,
+    const std::vector<std::vector<double>>& form_factors2,
+    bool same_particles, Vector<RadialDistributionFunction>& distributions) {
+  std::clog << "calculating " << distributions.size()
+            << " distance distribution(s) with CUDA" << std::endl;
+  std::vector<std::vector<double>> values;
+  foxs_cuda::saxs::internal::distance_distributions_cuda(
+      flatten_coordinates(coordinates1), form_factors1,
+      flatten_coordinates(coordinates2), form_factors2, same_particles,
+      distributions[0].get_bin_size(), values);
+  if (values.size() != distributions.size()) {
+    throw std::runtime_error("CUDA returned an unexpected distribution count");
+  }
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    distributions[i].set_values(std::move(values[i]));
+  }
+}
+#endif
+
+}  // namespace
+
 const double Profile::modulation_function_parameter_ = 0.23;
 
 Profile::Profile(double qmin, double qmax, double delta)
@@ -30,6 +72,7 @@ Profile::Profile(double qmin, double qmax, double delta)
       c1_(10),
       c2_(10),
       experimental_(false),
+      use_gpu_(false),
       average_radius_(1.58),
       average_volume_(17.5),
       id_(0),
@@ -39,12 +82,22 @@ Profile::Profile(double qmin, double qmax, double delta)
 
 Profile::Profile(const std::string& file_name, bool fit_file, double max_q, int units)
     : experimental_(true),
+      use_gpu_(false),
       name_(file_name),
       id_(0),
       beam_profile_(nullptr) {
   ff_table_ = nullptr;
   if (fit_file) experimental_ = false;
   read_SAXS_file(file_name, fit_file, max_q, units);
+}
+
+bool Profile::is_gpu_available(std::string* reason) {
+#ifdef FOXS_SAXS_CUDA_LIB
+  return foxs_cuda::saxs::internal::cuda_device_available(reason);
+#else
+  if (reason) *reason = "FoXS was built without CUDA support";
+  return false;
+#endif
 }
 
 void Profile::init(unsigned int size, unsigned int partial_profiles_size) {
@@ -388,15 +441,27 @@ void Profile::calculate_profile_real(const Molecule<Atom>& particles,
   Vector<double> form_factors;
   get_form_factors(particles, ff_table_, form_factors, ff_type);
 
-  // iterate over pairs of atoms
-  for (unsigned int i = 0; i < coordinates.size(); i++) {
-    for (unsigned int j = i + 1; j < coordinates.size(); j++) {
-      double dist = get_squared_distance(coordinates[i], coordinates[j]);
-      double prod = form_factors[i] * form_factors[j];
-      r_dist.add_to_distribution(dist, 2 * prod);
+  if (use_gpu_) {
+#ifdef FOXS_SAXS_CUDA_LIB
+    Vector<RadialDistributionFunction> distributions(1);
+    calculate_distance_distributions_on_gpu(
+        coordinates, {form_factors}, coordinates, {form_factors}, true,
+        distributions);
+    r_dist = std::move(distributions[0]);
+#else
+    throw std::runtime_error("FoXS was built without CUDA support");
+#endif
+  } else {
+    // iterate over pairs of atoms
+    for (unsigned int i = 0; i < coordinates.size(); i++) {
+      for (unsigned int j = i + 1; j < coordinates.size(); j++) {
+        double dist = get_squared_distance(coordinates[i], coordinates[j]);
+        double prod = form_factors[i] * form_factors[j];
+        r_dist.add_to_distribution(dist, 2 * prod);
+      }
+      // add autocorrelation part
+      r_dist.add_to_distribution(0.0, square(form_factors[i]));
     }
-    // add autocorrelation part
-    r_dist.add_to_distribution(0.0, square(form_factors[i]));
   }
   squared_distribution_2_profile(r_dist);
 }
@@ -419,14 +484,27 @@ void Profile::calculate_profile_constant_form_factor(const Molecule<Atom>& parti
   get_coordinates(particles, coordinates);
   double ff = square(form_factor);
 
-  // iterate over pairs of atoms
-  for (unsigned int i = 0; i < coordinates.size(); i++) {
-    for (unsigned int j = i + 1; j < coordinates.size(); j++) {
-      double dist = get_squared_distance(coordinates[i], coordinates[j]);
-      r_dist.add_to_distribution(dist, 2 * ff);
+  if (use_gpu_) {
+#ifdef FOXS_SAXS_CUDA_LIB
+    Vector<double> form_factors(coordinates.size(), form_factor);
+    Vector<RadialDistributionFunction> distributions(1);
+    calculate_distance_distributions_on_gpu(
+        coordinates, {form_factors}, coordinates, {form_factors}, true,
+        distributions);
+    r_dist = std::move(distributions[0]);
+#else
+    throw std::runtime_error("FoXS was built without CUDA support");
+#endif
+  } else {
+    // iterate over pairs of atoms
+    for (unsigned int i = 0; i < coordinates.size(); i++) {
+      for (unsigned int j = i + 1; j < coordinates.size(); j++) {
+        double dist = get_squared_distance(coordinates[i], coordinates[j]);
+        r_dist.add_to_distribution(dist, 2 * ff);
+      }
+      // add autocorrelation part
+      r_dist.add_to_distribution(0.0, ff);
     }
-    // add autocorrelation part
-    r_dist.add_to_distribution(0.0, ff);
   }
   squared_distribution_2_profile(r_dist);
 }
@@ -459,36 +537,47 @@ void Profile::calculate_profile_partial(const Molecule<Atom>& particles,
   if (surface.size() == particles.size()) r_size = 6;
   Vector<RadialDistributionFunction> r_dist(r_size);
 
-  // iterate over pairs of atoms
-  for (unsigned int i = 0; i < coordinates.size(); i++) {
-    for (unsigned int j = i + 1; j < coordinates.size(); j++) {
-      double dist = get_squared_distance(coordinates[i], coordinates[j]);
-      r_dist[0].add_to_distribution(
-          dist, 2 * vacuum_ff[i] * vacuum_ff[j]);  // constant
-      r_dist[1]
-          .add_to_distribution(dist, 2 * dummy_ff[i] * dummy_ff[j]);  // c1^2
-      r_dist[2]
-          .add_to_distribution(dist, 2 * (vacuum_ff[i] * dummy_ff[j] +
-                                          vacuum_ff[j] * dummy_ff[i]));  // -c1
-      if (r_size > 3) {
-        r_dist[3]
-            .add_to_distribution(dist, 2 * water_ff[i] * water_ff[j]);  // c2^2
-        r_dist[4]
-            .add_to_distribution(dist, 2 * (vacuum_ff[i] * water_ff[j] +
-                                            vacuum_ff[j] * water_ff[i]));  // c2
-        r_dist[5].add_to_distribution(
-            dist, 2 * (water_ff[i] * dummy_ff[j] +
-                       water_ff[j] * dummy_ff[i]));  // -c1*c2
+  if (use_gpu_) {
+#ifdef FOXS_SAXS_CUDA_LIB
+    std::vector<std::vector<double>> factors{vacuum_ff, dummy_ff};
+    if (r_size == 6) factors.push_back(water_ff);
+    calculate_distance_distributions_on_gpu(
+        coordinates, factors, coordinates, factors, true, r_dist);
+#else
+    throw std::runtime_error("FoXS was built without CUDA support");
+#endif
+  } else {
+    // iterate over pairs of atoms
+    for (unsigned int i = 0; i < coordinates.size(); i++) {
+      for (unsigned int j = i + 1; j < coordinates.size(); j++) {
+        double dist = get_squared_distance(coordinates[i], coordinates[j]);
+        r_dist[0].add_to_distribution(
+            dist, 2 * vacuum_ff[i] * vacuum_ff[j]);  // constant
+        r_dist[1]
+            .add_to_distribution(dist, 2 * dummy_ff[i] * dummy_ff[j]);  // c1^2
+        r_dist[2]
+            .add_to_distribution(dist, 2 * (vacuum_ff[i] * dummy_ff[j] +
+                                            vacuum_ff[j] * dummy_ff[i]));  // -c1
+        if (r_size > 3) {
+          r_dist[3]
+              .add_to_distribution(dist, 2 * water_ff[i] * water_ff[j]);  // c2^2
+          r_dist[4]
+              .add_to_distribution(dist, 2 * (vacuum_ff[i] * water_ff[j] +
+                                              vacuum_ff[j] * water_ff[i]));  // c2
+          r_dist[5].add_to_distribution(
+              dist, 2 * (water_ff[i] * dummy_ff[j] +
+                         water_ff[j] * dummy_ff[i]));  // -c1*c2
+        }
       }
-    }
-    // add autocorrelation part
-    r_dist[0].add_to_distribution(0.0, square(vacuum_ff[i]));
-    r_dist[1].add_to_distribution(0.0, square(dummy_ff[i]));
-    r_dist[2].add_to_distribution(0.0, 2 * vacuum_ff[i] * dummy_ff[i]);
-    if (r_size > 3) {
-      r_dist[3].add_to_distribution(0.0, square(water_ff[i]));
-      r_dist[4].add_to_distribution(0.0, 2 * vacuum_ff[i] * water_ff[i]);
-      r_dist[5].add_to_distribution(0.0, 2 * water_ff[i] * dummy_ff[i]);
+      // add autocorrelation part
+      r_dist[0].add_to_distribution(0.0, square(vacuum_ff[i]));
+      r_dist[1].add_to_distribution(0.0, square(dummy_ff[i]));
+      r_dist[2].add_to_distribution(0.0, 2 * vacuum_ff[i] * dummy_ff[i]);
+      if (r_size > 3) {
+        r_dist[3].add_to_distribution(0.0, square(water_ff[i]));
+        r_dist[4].add_to_distribution(0.0, 2 * vacuum_ff[i] * water_ff[i]);
+        r_dist[5].add_to_distribution(0.0, 2 * water_ff[i] * dummy_ff[i]);
+      }
     }
   }
 
@@ -542,26 +631,41 @@ void Profile::calculate_profile_partial(const Molecule<Atom>& particles1,
 
   Vector<RadialDistributionFunction> r_dist(r_size);
 
-  // iterate over pairs of atoms
-  for (unsigned int i = 0; i < coordinates1.size(); i++) {
-    for (unsigned int j = 0; j < coordinates2.size(); j++) {
-      double dist = get_squared_distance(coordinates1[i], coordinates2[j]);
-      r_dist[0].add_to_distribution(
-          dist, 2 * vacuum_ff1[i] * vacuum_ff2[j]);  // constant
-      r_dist[1]
-          .add_to_distribution(dist, 2 * dummy_ff1[i] * dummy_ff2[j]);  // c1^2
-      r_dist[2].add_to_distribution(dist,
-                                    2 * (vacuum_ff1[i] * dummy_ff2[j] +
-                                         vacuum_ff2[j] * dummy_ff1[i]));  // -c1
-      if (r_size > 3) {
-        r_dist[3].add_to_distribution(dist,
-                                      2 * water_ff1[i] * water_ff2[j]);  // c2^2
-        r_dist[4].add_to_distribution(
-            dist, 2 * (vacuum_ff1[i] * water_ff2[j] +
-                       vacuum_ff2[j] * water_ff1[i]));  // c2
-        r_dist[5].add_to_distribution(
-            dist, 2 * (water_ff1[i] * dummy_ff2[j] +
-                       water_ff2[j] * dummy_ff1[i]));  //-c1*c2
+  if (use_gpu_) {
+#ifdef FOXS_SAXS_CUDA_LIB
+    std::vector<std::vector<double>> factors1{vacuum_ff1, dummy_ff1};
+    std::vector<std::vector<double>> factors2{vacuum_ff2, dummy_ff2};
+    if (r_size == 6) {
+      factors1.push_back(water_ff1);
+      factors2.push_back(water_ff2);
+    }
+    calculate_distance_distributions_on_gpu(
+        coordinates1, factors1, coordinates2, factors2, false, r_dist);
+#else
+    throw std::runtime_error("FoXS was built without CUDA support");
+#endif
+  } else {
+    // iterate over pairs of atoms
+    for (unsigned int i = 0; i < coordinates1.size(); i++) {
+      for (unsigned int j = 0; j < coordinates2.size(); j++) {
+        double dist = get_squared_distance(coordinates1[i], coordinates2[j]);
+        r_dist[0].add_to_distribution(
+            dist, 2 * vacuum_ff1[i] * vacuum_ff2[j]);  // constant
+        r_dist[1]
+            .add_to_distribution(dist, 2 * dummy_ff1[i] * dummy_ff2[j]);  // c1^2
+        r_dist[2].add_to_distribution(
+            dist, 2 * (vacuum_ff1[i] * dummy_ff2[j] +
+                       vacuum_ff2[j] * dummy_ff1[i]));  // -c1
+        if (r_size > 3) {
+          r_dist[3].add_to_distribution(
+              dist, 2 * water_ff1[i] * water_ff2[j]);  // c2^2
+          r_dist[4].add_to_distribution(
+              dist, 2 * (vacuum_ff1[i] * water_ff2[j] +
+                         vacuum_ff2[j] * water_ff1[i]));  // c2
+          r_dist[5].add_to_distribution(
+              dist, 2 * (water_ff1[i] * dummy_ff2[j] +
+                         water_ff2[j] * dummy_ff1[i]));  //-c1*c2
+        }
       }
     }
   }
@@ -774,12 +878,24 @@ void Profile::calculate_profile_real(const Molecule<Atom>& particles1,
   get_form_factors(particles1, ff_table_, form_factors1, ff_type);
   get_form_factors(particles2, ff_table_, form_factors2, ff_type);
 
-  // iterate over pairs of atoms
-  for (unsigned int i = 0; i < coordinates1.size(); i++) {
-    for (unsigned int j = 0; j < coordinates2.size(); j++) {
-      double dist = get_squared_distance(coordinates1[i], coordinates2[j]);
-      double prod = form_factors1[i] * form_factors2[j];
-      r_dist.add_to_distribution(dist, 2 * prod);
+  if (use_gpu_) {
+#ifdef FOXS_SAXS_CUDA_LIB
+    Vector<RadialDistributionFunction> distributions(1);
+    calculate_distance_distributions_on_gpu(
+        coordinates1, {form_factors1}, coordinates2, {form_factors2}, false,
+        distributions);
+    r_dist = std::move(distributions[0]);
+#else
+    throw std::runtime_error("FoXS was built without CUDA support");
+#endif
+  } else {
+    // iterate over pairs of atoms
+    for (unsigned int i = 0; i < coordinates1.size(); i++) {
+      for (unsigned int j = 0; j < coordinates2.size(); j++) {
+        double dist = get_squared_distance(coordinates1[i], coordinates2[j]);
+        double prod = form_factors1[i] * form_factors2[j];
+        r_dist.add_to_distribution(dist, 2 * prod);
+      }
     }
   }
   squared_distribution_2_profile(r_dist);
@@ -822,7 +938,7 @@ void Profile::squared_distribution_2_profile(
     use_beam_profile = true;
 
 #ifdef FOXS_SAXS_CUDA_LIB
-  if (!use_beam_profile) {
+  if (use_gpu_ && !use_beam_profile) {
     foxs_cuda::saxs::internal::squared_distribution_2_profile_cuda(
            r_dist.data(), q_.data(), distances.data(), intensity_.data(),
            modulation_function_parameter_, r_dist.size(), size());

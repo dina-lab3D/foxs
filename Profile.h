@@ -211,6 +211,13 @@ class Profile {
 
   void set_id(unsigned int id) { id_ = id; }
 
+  //! Enable or disable CUDA distance-distribution calculation for this value.
+  void set_use_gpu(bool use_gpu) { use_gpu_ = use_gpu; }
+  bool get_use_gpu() const { return use_gpu_; }
+
+  //! Check whether this build has access to a CUDA device.
+  static bool is_gpu_available(std::string* reason = nullptr);
+
   void set_beam_profile(std::string beam_profile_file) {
     beam_profile_ = std::make_shared<Profile>(beam_profile_file);
   }
@@ -294,6 +301,7 @@ class Profile {
   double c1_, c2_;
 
   bool experimental_;     // experimental profile read from file
+  bool use_gpu_;          // use CUDA for distance-distribution calculation
   double average_radius_;  // average radius of the particles
   double average_volume_;  // average volume
 

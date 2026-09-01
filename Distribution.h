@@ -15,6 +15,7 @@
 #include "foxs_config.h"
 #include <iostream>
 #include <cmath>
+#include <utility>
 
 namespace foxs {
 
@@ -123,6 +124,13 @@ class RadialDistributionFunction : public Distribution<double> {
       max_distance_ = get_distance_from_index(index + 1);
     }
     (*this)[index] += value;
+  }
+
+  //! Replace all bins with values calculated by an accelerator.
+  void set_values(std::vector<double> values) {
+    std::vector<double>::operator=(std::move(values));
+    max_distance_ = get_distance_from_index(size());
+    sqrt_distances_.clear();
   }
 
  private:
