@@ -11,16 +11,22 @@ BUILD_DIR ?= $(if $(filter 1,$(GPU)),build-cuda,build)
 
 GAMB_DIR ?= ../gamb
 GAMB_LIB ?= $(GAMB_DIR)/libgamb++.a
-BOOST_PREFIX ?= /opt/homebrew/opt/boost
+BOOST_PREFIX ?=
 
-CPPFLAGS += -I. -I$(GAMB_DIR) -I$(BOOST_PREFIX)/include
+# Leave BOOST_PREFIX empty to use Boost from the system include and library
+# paths. Set it only for a non-standard installation, e.g.
+# BOOST_PREFIX=/opt/homebrew/opt/boost.
+BOOST_CPPFLAGS := $(if $(strip $(BOOST_PREFIX)),-I$(BOOST_PREFIX)/include)
+BOOST_LDFLAGS := $(if $(strip $(BOOST_PREFIX)),-L$(BOOST_PREFIX)/lib)
+
+CPPFLAGS += -I. -I$(GAMB_DIR) $(BOOST_CPPFLAGS)
 CXXFLAGS ?= -O3
 CXXFLAGS += -std=c++17 -Wall -Wextra -MMD -MP
 NVCCFLAGS ?= -O3 -std=c++17
 ifneq ($(strip $(CUDA_ARCH)),)
   NVCCFLAGS += -arch=$(CUDA_ARCH)
 endif
-LDFLAGS += -L$(BOOST_PREFIX)/lib
+LDFLAGS += $(BOOST_LDFLAGS)
 BOOST_LIBS ?= -lboost_program_options
 LDLIBS += $(GAMB_LIB) $(BOOST_LIBS)
 
@@ -83,7 +89,11 @@ $(BUILD_DIR)/internal/cuda_helpers.o: internal/cuda_helpers.cu
 
 check-deps:
 	@test -f "$(GAMB_LIB)" || { echo "Missing GAMB library: $(GAMB_LIB)"; exit 1; }
-	@test -d "$(BOOST_PREFIX)/include/boost" || { echo "Missing Boost headers under $(BOOST_PREFIX)/include"; exit 1; }
+	@if [ -n "$(BOOST_PREFIX)" ]; then \
+		test -d "$(BOOST_PREFIX)/include/boost" || { echo "Missing Boost headers under $(BOOST_PREFIX)/include"; exit 1; }; \
+	else \
+		test -d /usr/include/boost || { echo "Missing system Boost headers; install Boost or set BOOST_PREFIX=/path/to/boost"; exit 1; }; \
+	fi
 	@if [ "$(GPU)" = "1" ]; then command -v "$(NVCC)" >/dev/null || { echo "Missing CUDA compiler: $(NVCC)"; exit 1; }; fi
 
 clean:
