@@ -22,13 +22,12 @@ class FoxsPDBSelector : public PDB::Selector {
         heavy_atoms_only_(heavy_atoms_only),
         explicit_water_(explicit_water) {}
 
-  bool operator()(const char* record) const override {
-    const std::string line(record);
-    const char alternate = PDB::atomAltLocIndicator(line);
+  bool operator()(const std::string& record) const override {
+    const char alternate = PDB::atomAltLocIndicator(record);
     if (alternate != ' ' && alternate != 'A') return false;
     if (residue_level_) return PDB::CAlphaSelector()(record);
 
-    const Atom atom(line);
+    const Atom atom(record);
     if (heavy_atoms_only_ && atom.isH()) return false;
     const std::string residue(atom.residueName());
     const bool water = residue == "HOH" || residue == "DOD" || residue == "WAT";
