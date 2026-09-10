@@ -11,8 +11,7 @@
 #include "foxs_config.h"
 #include "FitParameters.h"
 
-#include "Atom.h"
-#include "Molecule.h"
+#include "ChemMolecule.h"
 
 #include <string>
 #include <vector>
@@ -23,21 +22,21 @@ class JmolWriter {
  public:
   static void prepare_jmol_script(
       const std::vector<foxs::FitParameters>& fps,
-      const std::vector<Molecule<Atom>>& particles_vec,
+      const std::vector<ChemMolecule>& particles_vec,
       const std::string filename);
   static void prepare_jmol_script(
       const std::vector<std::string>& pdbs,
-      const std::vector<Molecule<Atom>>& particles_vec,
+      const std::vector<ChemMolecule>& particles_vec,
       const std::string filename);
 
  private:
   static void prepare_PDB_file(
       const std::vector<foxs::FitParameters>& fps,
-      const std::vector<Molecule<Atom>>& particles_vec,
+      const std::vector<ChemMolecule>& particles_vec,
       const std::string filename);
 
   static void prepare_PDB_file(
-      const std::vector<Molecule<Atom>>& particles_vec,
+      const std::vector<ChemMolecule>& particles_vec,
       const std::string filename);
 
   static std::string jmol_script(std::string jmol_path);

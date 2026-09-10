@@ -186,7 +186,7 @@ constant form factor (default = false)")
   if (residue_level) ff_type = CA_ATOMS;
 
   // 1. read pdbs and profiles, prepare particles
-  std::vector<Molecule<Atom>> particles_vec;
+  std::vector<ChemMolecule> particles_vec;
   Profiles exp_profiles;
 
   read_files(files, pdb_files, dat_files, particles_vec, exp_profiles,

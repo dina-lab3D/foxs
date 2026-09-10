@@ -10,8 +10,7 @@
 #define FOXS_PROFILE_H
 
 #include "foxs_config.h"
-#include "Atom.h"
-#include "Molecule.h"
+#include "ChemMolecule.h"
 
 #include "FormFactorTable.h"
 #include "Distribution.h"
@@ -53,7 +52,7 @@ class Profile {
   // Various ways to compute a profile
 
   //! computes theoretical profile
-  void calculate_profile(const Molecule<Atom>& atoms,
+  void calculate_profile(const ChemMolecule& atoms,
                          FormFactorType ff_type = HEAVY_ATOMS,
                          bool reciprocal = false) {
     if (!reciprocal)
@@ -69,43 +68,43 @@ class Profile {
     given a pair of c1/c2 values by sum_partial_profiles function.
     see FoXS paper for details.
   */
-  void calculate_profile_partial(const Molecule<Atom>& atoms,
+  void calculate_profile_partial(const ChemMolecule& atoms,
                                  const Vector<double>& surface = Vector<double>(),
                                  FormFactorType ff_type = HEAVY_ATOMS);
 
   //! compute profile for fitting with hydration layer and excluded volume
-  void calculate_profile_partial(const Molecule<Atom>& atoms1,
-                                 const Molecule<Atom>& atoms2,
+  void calculate_profile_partial(const ChemMolecule& atoms1,
+                                 const ChemMolecule& atoms2,
                                  const Vector<double>& surface1 = Vector<double>(),
                                  const Vector<double>& surface2 = Vector<double>(),
                                  FormFactorType ff_type = HEAVY_ATOMS);
 
-  void calculate_profile_reciprocal_partial(const Molecule<Atom>& atoms,
+  void calculate_profile_reciprocal_partial(const ChemMolecule& atoms,
                                  const Vector<double>& surface = Vector<double>(),
                                  FormFactorType ff_type = HEAVY_ATOMS);
 
 
   //! computes theoretical profile contribution from inter-molecular
   //! interactions between the particles
-  void calculate_profile(const Molecule<Atom>& atoms1,
-                         const Molecule<Atom>& atoms2,
+  void calculate_profile(const ChemMolecule& atoms1,
+                         const ChemMolecule& atoms2,
                          FormFactorType ff_type = HEAVY_ATOMS) {
     calculate_profile_real(atoms1, atoms2, ff_type);
   }
 
   //! calculate Intensity at zero (= squared number of electrons)
-  double calculate_I0(const Molecule<Atom>& atoms,
+  double calculate_I0(const ChemMolecule& atoms,
                       FormFactorType ff_type = HEAVY_ATOMS);
 
   //! calculate profile for any type of Particles that have coordinates
-  void calculate_profile_constant_form_factor(const Molecule<Atom>& atoms,
+  void calculate_profile_constant_form_factor(const ChemMolecule& atoms,
                                               double form_factor = 1.0);
 
 
   // computes theoretical profile faster for cyclically symmetric particles
   // assumes that the units particles are ordered one after another in the
   // input particles vector (n - symmetry order)
-  void calculate_profile_symmetric(const Molecule<Atom>& atoms,
+  void calculate_profile_symmetric(const ChemMolecule& atoms,
                                    unsigned int n,
                                    FormFactorType ff_type = HEAVY_ATOMS);
 
@@ -264,18 +263,18 @@ class Profile {
   void init(unsigned int size = 0, unsigned int partial_profiles_size = 0);
 
  private:
-  void calculate_profile_reciprocal(const Molecule<Atom>& atoms,
+  void calculate_profile_reciprocal(const ChemMolecule& atoms,
                                     FormFactorType ff_type = HEAVY_ATOMS);
 
-  void calculate_profile_reciprocal(const Molecule<Atom>& atoms1,
-                                    const Molecule<Atom>& atoms2,
+  void calculate_profile_reciprocal(const ChemMolecule& atoms1,
+                                    const ChemMolecule& atoms2,
                                     FormFactorType ff_type = HEAVY_ATOMS);
 
-  void calculate_profile_real(const Molecule<Atom>& atoms,
+  void calculate_profile_real(const ChemMolecule& atoms,
                               FormFactorType ff_type = HEAVY_ATOMS);
 
-  void calculate_profile_real(const Molecule<Atom>& atoms1,
-                              const Molecule<Atom>& atoms2,
+  void calculate_profile_real(const ChemMolecule& atoms1,
+                              const ChemMolecule& atoms2,
                               FormFactorType ff_type = HEAVY_ATOMS);
 
   void squared_distribution_2_profile(const RadialDistributionFunction& r_dist);

@@ -47,16 +47,47 @@ void calculate_distance_distributions_on_gpu(
     bool same_particles, Vector<RadialDistributionFunction>& distributions) {
   std::clog << "calculating " << distributions.size()
             << " distance distribution(s) with CUDA" << std::endl;
+  const std::vector<double> flattened1 = flatten_coordinates(coordinates1);
   std::vector<std::vector<double>> values;
-  foxs_cuda::saxs::internal::distance_distributions_cuda(
-      flatten_coordinates(coordinates1), form_factors1,
-      flatten_coordinates(coordinates2), form_factors2, same_particles,
-      distributions[0].get_bin_size(), values);
+  if (same_particles) {
+    foxs_cuda::saxs::internal::distance_distributions_cuda(
+        flattened1, form_factors1, flattened1, form_factors1, true,
+        distributions[0].get_bin_size(), values);
+  } else {
+    const std::vector<double> flattened2 = flatten_coordinates(coordinates2);
+    foxs_cuda::saxs::internal::distance_distributions_cuda(
+        flattened1, form_factors1, flattened2, form_factors2, false,
+        distributions[0].get_bin_size(), values);
+  }
   if (values.size() != distributions.size()) {
     throw std::runtime_error("CUDA returned an unexpected distribution count");
   }
   for (std::size_t i = 0; i < values.size(); ++i) {
     distributions[i].set_values(std::move(values[i]));
+  }
+}
+
+void calculate_profiles_on_gpu(
+    const Vector<algebra::Vector3D>& coordinates1,
+    const std::vector<std::vector<double>>& form_factors1,
+    const Vector<algebra::Vector3D>& coordinates2,
+    const std::vector<std::vector<double>>& form_factors2,
+    bool same_particles, double bin_size, const std::vector<double>& q,
+    double modulation_function_parameter,
+    std::vector<std::vector<double>>& profiles) {
+  std::clog << "calculating "
+            << (form_factors1.size() * (form_factors1.size() + 1) / 2)
+            << " profile(s) with CUDA" << std::endl;
+  const std::vector<double> flattened1 = flatten_coordinates(coordinates1);
+  if (same_particles) {
+    foxs_cuda::saxs::internal::distance_distributions_to_profiles_cuda(
+        flattened1, form_factors1, flattened1, form_factors1, true, bin_size,
+        q, modulation_function_parameter, profiles);
+  } else {
+    const std::vector<double> flattened2 = flatten_coordinates(coordinates2);
+    foxs_cuda::saxs::internal::distance_distributions_to_profiles_cuda(
+        flattened1, form_factors1, flattened2, form_factors2, false, bin_size,
+        q, modulation_function_parameter, profiles);
   }
 }
 #endif
@@ -430,7 +461,7 @@ void Profile::write_partial_profiles(const std::string& file_name) const {
   out_file.close();
 }
 
-void Profile::calculate_profile_real(const Molecule<Atom>& particles,
+void Profile::calculate_profile_real(const ChemMolecule& particles,
                                      FormFactorType ff_type) {
   std::clog << "start real profile calculation for " << particles.size()
             << " particles" << std::endl;
@@ -443,6 +474,15 @@ void Profile::calculate_profile_real(const Molecule<Atom>& particles,
 
   if (use_gpu_) {
 #ifdef FOXS_SAXS_CUDA_LIB
+    if (beam_profile_ == nullptr || beam_profile_->empty()) {
+      init();
+      std::vector<std::vector<double>> profiles;
+      calculate_profiles_on_gpu(
+          coordinates, {form_factors}, coordinates, {form_factors}, true,
+          r_dist.get_bin_size(), q_, modulation_function_parameter_, profiles);
+      intensity_ = std::move(profiles[0]);
+      return;
+    }
     Vector<RadialDistributionFunction> distributions(1);
     calculate_distance_distributions_on_gpu(
         coordinates, {form_factors}, coordinates, {form_factors}, true,
@@ -466,7 +506,7 @@ void Profile::calculate_profile_real(const Molecule<Atom>& particles,
   squared_distribution_2_profile(r_dist);
 }
 
-double Profile::calculate_I0(const Molecule<Atom>& particles,
+double Profile::calculate_I0(const ChemMolecule& particles,
                              FormFactorType ff_type) {
   double I0 = 0.0;
   for (unsigned int i = 0; i < particles.size(); i++)
@@ -474,7 +514,7 @@ double Profile::calculate_I0(const Molecule<Atom>& particles,
   return square(I0);
 }
 
-void Profile::calculate_profile_constant_form_factor(const Molecule<Atom>& particles,
+void Profile::calculate_profile_constant_form_factor(const ChemMolecule& particles,
                                                      double form_factor) {
   std::clog << "start real profile calculation for " << particles.size()
             << " particles" << std::endl;
@@ -487,6 +527,15 @@ void Profile::calculate_profile_constant_form_factor(const Molecule<Atom>& parti
   if (use_gpu_) {
 #ifdef FOXS_SAXS_CUDA_LIB
     Vector<double> form_factors(coordinates.size(), form_factor);
+    if (beam_profile_ == nullptr || beam_profile_->empty()) {
+      init();
+      std::vector<std::vector<double>> profiles;
+      calculate_profiles_on_gpu(
+          coordinates, {form_factors}, coordinates, {form_factors}, true,
+          r_dist.get_bin_size(), q_, modulation_function_parameter_, profiles);
+      intensity_ = std::move(profiles[0]);
+      return;
+    }
     Vector<RadialDistributionFunction> distributions(1);
     calculate_distance_distributions_on_gpu(
         coordinates, {form_factors}, coordinates, {form_factors}, true,
@@ -510,7 +559,7 @@ void Profile::calculate_profile_constant_form_factor(const Molecule<Atom>& parti
 }
 
 
-void Profile::calculate_profile_partial(const Molecule<Atom>& particles,
+void Profile::calculate_profile_partial(const ChemMolecule& particles,
                                         const Vector<double>& surface,
                                         FormFactorType ff_type) {
   std::clog << "start real partial profile calculation for "
@@ -541,6 +590,15 @@ void Profile::calculate_profile_partial(const Molecule<Atom>& particles,
 #ifdef FOXS_SAXS_CUDA_LIB
     std::vector<std::vector<double>> factors{vacuum_ff, dummy_ff};
     if (r_size == 6) factors.push_back(water_ff);
+    if (beam_profile_ == nullptr || beam_profile_->empty()) {
+      init(q_.size(), r_size);
+      calculate_profiles_on_gpu(
+          coordinates, factors, coordinates, factors, true,
+          r_dist[0].get_bin_size(), q_, modulation_function_parameter_,
+          partial_profiles_);
+      sum_partial_profiles(1.0, 0.0, false);
+      return;
+    }
     calculate_distance_distributions_on_gpu(
         coordinates, factors, coordinates, factors, true, r_dist);
 #else
@@ -588,8 +646,8 @@ void Profile::calculate_profile_partial(const Molecule<Atom>& particles,
   sum_partial_profiles(1.0, 0.0, false);
 }
 
-void Profile::calculate_profile_partial(const Molecule<Atom>& particles1,
-                                        const Molecule<Atom>& particles2,
+void Profile::calculate_profile_partial(const ChemMolecule& particles1,
+                                        const ChemMolecule& particles2,
                                         const Vector<double>& surface1,
                                         const Vector<double>& surface2,
                                         FormFactorType ff_type) {
@@ -638,6 +696,15 @@ void Profile::calculate_profile_partial(const Molecule<Atom>& particles1,
     if (r_size == 6) {
       factors1.push_back(water_ff1);
       factors2.push_back(water_ff2);
+    }
+    if (beam_profile_ == nullptr || beam_profile_->empty()) {
+      init(q_.size(), r_size);
+      calculate_profiles_on_gpu(
+          coordinates1, factors1, coordinates2, factors2, false,
+          r_dist[0].get_bin_size(), q_, modulation_function_parameter_,
+          partial_profiles_);
+      sum_partial_profiles(1.0, 0.0, false);
+      return;
     }
     calculate_distance_distributions_on_gpu(
         coordinates1, factors1, coordinates2, factors2, false, r_dist);
@@ -793,7 +860,7 @@ void Profile::downsample(Profile* downsampled_profile,
   }
 }
 
-void Profile::calculate_profile_symmetric(const Molecule<Atom>& particles,
+void Profile::calculate_profile_symmetric(const ChemMolecule& particles,
                                           unsigned int n,
                                           FormFactorType ff_type) {
   if (n <= 1) {
@@ -810,7 +877,7 @@ void Profile::calculate_profile_symmetric(const Molecule<Atom>& particles,
                                           Vector<algebra::Vector3D>(unit_size));
   for (unsigned int i = 0; i <= number_of_distances; i++) {
     for (unsigned int j = 0; j < unit_size; j++) {
-      const Atom& atom = particles[i * unit_size + j];
+      const ChemAtom& atom = particles[i * unit_size + j];
       units[i][j] = algebra::Vector3D(atom[0], atom[1], atom[2]);
     }
   }
@@ -862,8 +929,8 @@ void Profile::calculate_profile_symmetric(const Molecule<Atom>& particles,
   squared_distribution_2_profile(r_dist2);
 }
 
-void Profile::calculate_profile_real(const Molecule<Atom>& particles1,
-                                     const Molecule<Atom>& particles2,
+void Profile::calculate_profile_real(const ChemMolecule& particles1,
+                                     const ChemMolecule& particles2,
                                      FormFactorType ff_type) {
   std::clog << "start real profile calculation for " << particles1.size()
             << " + " << particles2.size() << " particles" << std::endl;
@@ -880,6 +947,15 @@ void Profile::calculate_profile_real(const Molecule<Atom>& particles1,
 
   if (use_gpu_) {
 #ifdef FOXS_SAXS_CUDA_LIB
+    if (beam_profile_ == nullptr || beam_profile_->empty()) {
+      init();
+      std::vector<std::vector<double>> profiles;
+      calculate_profiles_on_gpu(
+          coordinates1, {form_factors1}, coordinates2, {form_factors2}, false,
+          r_dist.get_bin_size(), q_, modulation_function_parameter_, profiles);
+      intensity_ = std::move(profiles[0]);
+      return;
+    }
     Vector<RadialDistributionFunction> distributions(1);
     calculate_distance_distributions_on_gpu(
         coordinates1, {form_factors1}, coordinates2, {form_factors2}, false,
@@ -1210,7 +1286,7 @@ void Profile::profile_2_distribution(RadialDistributionFunction& rd,
   }
 }
 
-void Profile::calculate_profile_reciprocal(const Molecule<Atom>& particles,
+void Profile::calculate_profile_reciprocal(const ChemMolecule& particles,
                                            FormFactorType ff_type) {
   if (ff_type == CA_ATOMS) {
     std::cerr << "Reciprocal space profile calculation is not supported for"
@@ -1250,7 +1326,7 @@ void Profile::calculate_profile_reciprocal(const Molecule<Atom>& particles,
   }  // end of loop1
 }
 
-void Profile::calculate_profile_reciprocal_partial(const Molecule<Atom>& particles,
+void Profile::calculate_profile_reciprocal_partial(const ChemMolecule& particles,
                                                    const Vector<double>& surface,
                                                    FormFactorType ff_type) {
   if (ff_type == CA_ATOMS) {

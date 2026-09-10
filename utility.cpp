@@ -4,8 +4,9 @@
  */
 
 #include "utility.h"
-#include "SolventAccessibleSurface.h"
+#include "SASurface.h"
 
+#include <cmath>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -42,7 +43,7 @@ class FoxsPDBSelector : public PDB::Selector {
 
 }  // namespace
 
-Profile compute_profile(Molecule<Atom> particles, double min_q,
+Profile compute_profile(ChemMolecule particles, double min_q,
                         double max_q, double delta_q, FormFactorTable* ft,
                         FormFactorType ff_type, bool hydration_layer, bool fit,
                         bool reciprocal, bool ab_initio, bool vacuum,
@@ -53,18 +54,23 @@ Profile compute_profile(Molecule<Atom> particles, double min_q,
   if (!beam_profile_file.empty()) profile.set_beam_profile(beam_profile_file);
 
   Vector<double> surface_area;
-  SolventAccessibleSurface surface_calculator;
   double average_radius = 0.0;
   if (hydration_layer && !particles.empty()) {
-    std::vector<double> radii;
-    radii.reserve(particles.size());
-    for (const Atom& atom : particles) {
+    for (ChemAtom& atom : particles) {
       const double radius = ft->get_radius(atom, ff_type);
-      radii.push_back(radius);
+      atom.setRadius(static_cast<float>(radius));
       average_radius += radius;
     }
-    surface_area =
-        surface_calculator.get_solvent_accessibility(particles, radii);
+
+    SASurface surface_calculator(particles, 1.8f, 5.0f);
+    surface_calculator.computeASAForAtoms();
+
+    surface_area.reserve(particles.size());
+    for (const ChemAtom& atom : particles) {
+      const double radius = atom.getRadius();
+      const double full_area = 4.0 * PI * radius * radius;
+      surface_area.push_back(full_area > 0.0 ? atom.getASA() / full_area : 0.0);
+    }
     profile.set_average_radius(average_radius / particles.size());
   }
 
@@ -88,26 +94,26 @@ Profile compute_profile(Molecule<Atom> particles, double min_q,
 
 void read_pdb(const std::string& file,
               std::vector<std::string>& pdb_file_names,
-              std::vector<Molecule<Atom>>& particles_vec,
+              std::vector<ChemMolecule>& particles_vec,
               bool residue_level, bool heavy_atoms_only, int multi_model_pdb,
               bool explicit_water) {
   std::ifstream input(file.c_str());
   if (!input) return;
 
   FoxsPDBSelector selector(residue_level, heavy_atoms_only, explicit_water);
-  std::vector<Molecule<Atom>> models;
+  std::vector<ChemMolecule> models;
 
   if (multi_model_pdb == 2) {
     while (input) {
-      Molecule<Atom> model;
+      ChemMolecule model;
       model.readModelFromPDBfile(input, selector);
       if (!model.empty()) models.push_back(std::move(model));
     }
   } else {
-    Molecule<Atom> model;
+    ChemMolecule model;
     if (multi_model_pdb == 3) {
       if (explicit_water)
-        model.readAllPDBfile(input, selector);
+        model.Molecule<ChemAtom>::readAllPDBfile(input, selector);
       else
         model.readPDBfile(input, selector);
     } else {
@@ -133,7 +139,7 @@ void read_pdb(const std::string& file,
 void read_files(const std::vector<std::string>& files,
                 std::vector<std::string>& pdb_file_names,
                 std::vector<std::string>& dat_files,
-                std::vector<Molecule<Atom>>& particles_vec,
+                std::vector<ChemMolecule>& particles_vec,
                 Profiles& exp_profiles, bool residue_level,
                 bool heavy_atoms_only, int multi_model_pdb,
                 bool explicit_water, float max_q, int units) {

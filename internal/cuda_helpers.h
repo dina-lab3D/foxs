@@ -35,6 +35,17 @@ void distance_distributions_cuda(
     bool same_particles, double bin_size,
     std::vector<std::vector<double>>& distributions);
 
+//! Calculate distance distributions and transform them to SAXS profiles
+//! without copying the intermediate histograms back to the host.
+void distance_distributions_to_profiles_cuda(
+    const std::vector<double>& coordinates1,
+    const std::vector<std::vector<double>>& form_factors1,
+    const std::vector<double>& coordinates2,
+    const std::vector<std::vector<double>>& form_factors2,
+    bool same_particles, double bin_size, const std::vector<double>& q,
+    double modulation_function_parameter,
+    std::vector<std::vector<double>>& profiles);
+
 void squared_distribution_2_profile_cuda(
            const double *r_dist, const double *q,
            const double *distances, double *intensity,

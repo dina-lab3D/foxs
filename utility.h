@@ -11,12 +11,11 @@
 #include "FormFactorTable.h"
 #include "Profile.h"
 
-#include "Atom.h"
-#include "Molecule.h"
+#include "ChemMolecule.h"
 
 namespace foxs {
 
-inline void get_coordinates(const Molecule<Atom>& particles,
+inline void get_coordinates(const ChemMolecule& particles,
                             Vector<algebra::Vector3D>& coordinates) {
   // copy everything in advance for fast access
   coordinates.resize(particles.size());
@@ -26,7 +25,7 @@ inline void get_coordinates(const Molecule<Atom>& particles,
   }
 }
 
-inline void get_form_factors(const Molecule<Atom>& particles,
+inline void get_form_factors(const ChemMolecule& particles,
                              FormFactorTable* ff_table,
                              Vector<double>& form_factors,
                              FormFactorType ff_type) {
@@ -37,7 +36,7 @@ inline void get_form_factors(const Molecule<Atom>& particles,
 }
 
 //! compute max distance
-inline double compute_max_distance(const Molecule<Atom>& particles) {
+inline double compute_max_distance(const ChemMolecule& particles) {
   double max_dist2 = 0;
   Vector<algebra::Vector3D> coordinates(particles.size());
   get_coordinates(particles, coordinates);
@@ -52,8 +51,8 @@ inline double compute_max_distance(const Molecule<Atom>& particles) {
 
 //! compute max distance between pairs of particles one from particles1
 //! and the other from particles2
-inline double compute_max_distance(const Molecule<Atom>& particles1,
-                                  const Molecule<Atom>& particles2) {
+inline double compute_max_distance(const ChemMolecule& particles1,
+                                  const ChemMolecule& particles2) {
   double max_dist2 = 0;
   Vector<algebra::Vector3D> coordinates1, coordinates2;
   get_coordinates(particles1, coordinates1);
@@ -69,7 +68,7 @@ inline double compute_max_distance(const Molecule<Atom>& particles1,
 }
 
 //! compute radius_of_gyration
-inline double radius_of_gyration(const Molecule<Atom>& particles) {
+inline double radius_of_gyration(const ChemMolecule& particles) {
   algebra::Vector3D centroid(0.0, 0.0, 0.0);
   Vector<algebra::Vector3D> coordinates(particles.size());
   get_coordinates(particles, coordinates);
@@ -86,7 +85,7 @@ inline double radius_of_gyration(const Molecule<Atom>& particles) {
 }
 
 //! profile calculation for particles and a given set of options
-Profile compute_profile(Molecule<Atom> particles,
+Profile compute_profile(ChemMolecule particles,
                          double min_q = 0.0, double max_q = 0.5,
                          double delta_q = 0.001,
                          FormFactorTable* ft = get_default_form_factor_table(),
@@ -102,7 +101,7 @@ Profile compute_profile(Molecule<Atom> particles,
 //! Read PDB (or mmCIF) files
 void read_pdb(const std::string& file,
               std::vector<std::string>& pdb_file_names,
-              std::vector<Molecule<Atom>>& particles_vec,
+              std::vector<ChemMolecule>& particles_vec,
               bool residue_level = false,
               bool heavy_atoms_only = true,
               int multi_model_pdb = 2,
@@ -112,7 +111,7 @@ void read_pdb(const std::string& file,
 void read_files(const std::vector<std::string>& files,
                 std::vector<std::string>& pdb_file_names,
                 std::vector<std::string>& dat_files,
-                std::vector<Molecule<Atom>>& particles_vec,
+                std::vector<ChemMolecule>& particles_vec,
                 Profiles& exp_profiles,
                 bool residue_level = false,
                 bool heavy_atoms_only = true,

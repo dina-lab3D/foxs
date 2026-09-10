@@ -28,7 +28,7 @@ float JmolWriter::MAX_C2_ = 4.0;
 
 void JmolWriter::prepare_jmol_script(
     const std::vector<foxs::FitParameters>& fps,
-    const std::vector<Molecule<Atom>>& particles_vec,
+    const std::vector<ChemMolecule>& particles_vec,
     const std::string filename) {
 
   std::string html_filename = filename + ".html";
@@ -115,7 +115,7 @@ void JmolWriter::prepare_jmol_script(
 
 void JmolWriter::prepare_jmol_script(
     const std::vector<std::string>& pdbs,
-    const std::vector<Molecule<Atom>>& particles_vec,
+    const std::vector<ChemMolecule>& particles_vec,
     const std::string filename) {
 
   std::string html_filename = filename + ".html";
@@ -183,7 +183,7 @@ void JmolWriter::prepare_jmol_script(
 
 void JmolWriter::prepare_PDB_file(
     const std::vector<foxs::FitParameters>& fps,
-    const std::vector<Molecule<Atom>>& particles_vec,
+    const std::vector<ChemMolecule>& particles_vec,
     const std::string filename) {
   std::ofstream out_file(filename.c_str());
   // center coordinates and join into a single PDB
@@ -200,7 +200,7 @@ void JmolWriter::prepare_PDB_file(
 
     out_file << "MODEL     " << i + 1 << '\n';
     for (unsigned int j = 0; j < particles_vec[mol_index].size(); j++) {
-      Atom centered = particles_vec[mol_index][j];
+      ChemAtom centered = particles_vec[mol_index][j];
       centered -= Vector3(m[0], m[1], m[2]);
       out_file << centered << '\n';
     }
@@ -210,7 +210,7 @@ void JmolWriter::prepare_PDB_file(
 }
 
 void JmolWriter::prepare_PDB_file(
-    const std::vector<Molecule<Atom>>& particles_vec,
+    const std::vector<ChemMolecule>& particles_vec,
     const std::string filename) {
   std::ofstream out_file(filename.c_str());
   // center coordinates and join into a single PDB
@@ -227,7 +227,7 @@ void JmolWriter::prepare_PDB_file(
 
     out_file << "MODEL     " << i + 1 << '\n';
     for (unsigned int j = 0; j < particles_vec[i].size(); j++) {
-      Atom centered = particles_vec[i][j];
+      ChemAtom centered = particles_vec[i][j];
       centered -= Vector3(m[0], m[1], m[2]);
       out_file << centered << '\n';
     }
