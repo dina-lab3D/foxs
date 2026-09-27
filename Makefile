@@ -1,8 +1,8 @@
-# Build the GAMB- and DockingLib-backed FoXS command-line executable.
+# Build the standalone FoXS command-line executable.
 #
-# Override dependency locations when needed, for example:
-#   make GAMB_DIR=/path/to/gamb DOCKING_LIB_DIR=/path/to/DockingLib \
-#        BOOST_PREFIX=/path/to/boost
+# The minimal GAMB and DockingLib sources needed by FoXS are vendored under
+# lib/. Boost remains an external dependency; override its location with:
+#   make BOOST_PREFIX=/path/to/boost
 #
 # On macOS, Homebrew Boost is detected automatically in its standard Apple
 # Silicon and Intel locations. On Linux, system compiler/library paths are
@@ -15,10 +15,7 @@ GPU ?= 0
 BUILD_DIR ?= $(if $(filter 1,$(GPU)),build-cuda,build)
 HOST_OS := $(shell uname -s)
 
-GAMB_DIR ?= ../gamb
-GAMB_LIB ?= $(GAMB_DIR)/libgamb++.a
-DOCKING_LIB_DIR ?= ../DockingLib
-DOCKING_LIB ?= $(DOCKING_LIB_DIR)/libdockingLib.a
+LIB_DIR := lib
 BOOST_PREFIX ?=
 
 # Find standard Homebrew installations without requiring brew to be on PATH.
@@ -34,10 +31,10 @@ ifeq ($(HOST_OS),Darwin)
   endif
 endif
 
-BOOST_CPPFLAGS := $(if $(strip $(BOOST_PREFIX)),-I$(BOOST_PREFIX)/include)
+BOOST_CPPFLAGS := $(if $(strip $(BOOST_PREFIX)),-isystem $(BOOST_PREFIX)/include)
 BOOST_LDFLAGS := $(if $(strip $(BOOST_PREFIX)),-L$(BOOST_PREFIX)/lib)
 
-CPPFLAGS += -I. -I$(DOCKING_LIB_DIR) -I$(GAMB_DIR) $(BOOST_CPPFLAGS)
+CPPFLAGS += -I. -I$(LIB_DIR) $(BOOST_CPPFLAGS)
 CXXFLAGS ?= -O3
 CXXFLAGS += -std=c++17 -Wall -Wextra -MMD -MP
 NVCCFLAGS ?= -O3 -std=c++17
@@ -46,10 +43,10 @@ ifneq ($(strip $(CUDA_ARCH)),)
 endif
 LDFLAGS += $(BOOST_LDFLAGS)
 BOOST_LIBS ?= -lboost_program_options
-LDLIBS += $(DOCKING_LIB) $(GAMB_LIB) $(BOOST_LIBS)
+LDLIBS += $(BOOST_LIBS)
 
-# macOS universal/c architecture override. Set it only when GAMB,
-# DockingLib, and Boost were built for the same architecture:
+# macOS architecture override. Set it only when Boost was built for the same
+# architecture:
 #   make ARCH=x86_64
 ifeq ($(HOST_OS),Darwin)
   ifneq ($(strip $(ARCH)),)
@@ -58,7 +55,7 @@ ifeq ($(HOST_OS),Darwin)
   endif
 endif
 
-SOURCES := \
+FOXS_SOURCES := \
 	foxs.cpp \
 	Profile.cpp \
 	Distribution.cpp \
@@ -73,7 +70,22 @@ SOURCES := \
 	JmolWriter.cpp \
 	ColorCoder.cpp
 
-OBJECTS := $(SOURCES:%.cpp=$(BUILD_DIR)/%.o)
+DOCKING_LIB_SOURCES := \
+	$(LIB_DIR)/ChemAtom.cc \
+	$(LIB_DIR)/DotSphere.cc \
+	$(LIB_DIR)/SASurface.cc
+
+GAMB_SOURCES := \
+	$(LIB_DIR)/Atom.cc \
+	$(LIB_DIR)/CIF.cc \
+	$(LIB_DIR)/Interface.cc \
+	$(LIB_DIR)/PDB.cc \
+	$(LIB_DIR)/SurfacePoint.cc
+
+DEPENDENCY_SOURCES := $(DOCKING_LIB_SOURCES) $(GAMB_SOURCES)
+OBJECTS := \
+	$(FOXS_SOURCES:%.cpp=$(BUILD_DIR)/%.o) \
+	$(DEPENDENCY_SOURCES:%.cc=$(BUILD_DIR)/%.o)
 CUDA_OBJECTS :=
 
 ifeq ($(GPU),1)
@@ -95,14 +107,14 @@ all: $(TARGET)
 test: $(TARGET)
 	python3 tests/test_foxs.py ./$(TARGET)
 
-$(TARGET): check-deps $(DOCKING_LIB) $(OBJECTS)
+$(TARGET): $(OBJECTS) | check-deps
 	$(LINKER) $(LDFLAGS) $(OBJECTS) $(LDLIBS) -o $@
 
-$(DOCKING_LIB):
-	$(MAKE) -C "$(DOCKING_LIB_DIR)" CXX="$(CXX)" \
-		GAMB_DIR="$(abspath $(GAMB_DIR))" BOOST_PREFIX="$(BOOST_PREFIX)"
-
 $(BUILD_DIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: %.cc
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -111,8 +123,8 @@ $(BUILD_DIR)/internal/cuda_helpers.o: internal/cuda_helpers.cu
 	$(NVCC) $(CPPFLAGS) $(NVCCFLAGS) -c $< -o $@
 
 check-deps:
-	@test -f "$(GAMB_LIB)" || { echo "Missing GAMB library: $(GAMB_LIB)"; exit 1; }
-	@test -f "$(DOCKING_LIB_DIR)/Makefile" || { echo "Missing DockingLib source directory: $(DOCKING_LIB_DIR)"; exit 1; }
+	@test -f "$(LIB_DIR)/Atom.cc" || { echo "Missing vendored GAMB sources under $(LIB_DIR)"; exit 1; }
+	@test -f "$(LIB_DIR)/SASurface.cc" || { echo "Missing vendored DockingLib sources under $(LIB_DIR)"; exit 1; }
 	@if [ -n "$(BOOST_PREFIX)" ]; then \
 		test -d "$(BOOST_PREFIX)/include/boost" || { echo "Missing Boost headers under $(BOOST_PREFIX)/include"; exit 1; }; \
 	fi
