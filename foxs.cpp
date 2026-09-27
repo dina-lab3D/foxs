@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
 2 - q values are in 1/A, 3 - q values are in 1/nm")
     ("volatility_ratio,v","calculate volatility ratio score (default = false)")
     ("score_log,l", "use log(intensity) in fitting and scoring (default = false)")
-    ("gpu", "use CUDA for distance-distribution calculation")
+    ("gpu", "use CUDA for solvent-accessibility and distance-distribution calculations")
     ("gnuplot_script,g", "print gnuplot script for gnuplot viewing (default = false)");
 
   std::string form_factor_table_file;

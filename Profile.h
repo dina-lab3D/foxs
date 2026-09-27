@@ -300,7 +300,7 @@ class Profile {
   double c1_, c2_;
 
   bool experimental_;     // experimental profile read from file
-  bool use_gpu_;          // use CUDA for distance-distribution calculation
+  bool use_gpu_;          // use CUDA for supported profile calculations
   double average_radius_;  // average radius of the particles
   double average_volume_;  // average volume
 

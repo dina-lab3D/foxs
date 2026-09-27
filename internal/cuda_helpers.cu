@@ -8,7 +8,9 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -25,6 +27,10 @@ constexpr unsigned int PAIRS_PER_THREAD =
     PAIR_TILE * PAIR_TILE / PAIR_THREADS;
 constexpr unsigned int PROFILE_THREADS = 256;
 constexpr unsigned int MAX_PROFILE_CHANNELS = 6;
+// Typical atomic radii generate fewer than 32 latitude rings, so one warp per
+// atom avoids block-level scheduling and synchronization overhead.
+constexpr unsigned int SURFACE_THREADS = 32;
+constexpr float SURFACE_PI = 3.14159265358979323846f;
 
 static_assert(PAIR_THREADS % PAIR_TILE == 0,
               "Pair thread count must be divisible by the tile width");
@@ -101,9 +107,165 @@ struct CudaWorkspace {
   ReusableDeviceBuffer<double> q;
   ReusableDeviceBuffer<double> profiles;
   ReusableDeviceBuffer<double> distances;
+  ReusableDeviceBuffer<float> surface_coordinates;
+  ReusableDeviceBuffer<float> surface_radii;
+  ReusableDeviceBuffer<float> surface_areas;
+  ReusableDeviceBuffer<int> surface_cell_x;
+  ReusableDeviceBuffer<int> surface_cell_y;
+  ReusableDeviceBuffer<int> surface_cell_z;
+  ReusableDeviceBuffer<int> surface_cell_start;
+  ReusableDeviceBuffer<int> surface_cell_count;
+  ReusableDeviceBuffer<int> surface_atom_indices;
 };
 
 thread_local CudaWorkspace workspace;
+
+struct SurfaceCellAtom {
+  int x;
+  int y;
+  int z;
+  int atom;
+};
+
+__host__ __device__ unsigned int surface_cell_hash(int x, int y, int z) {
+  unsigned int value = static_cast<unsigned int>(x) * 0x8da6b343u;
+  value ^= static_cast<unsigned int>(y) * 0xd8163841u;
+  value ^= static_cast<unsigned int>(z) * 0xcb1ab31fu;
+  value ^= value >> 16;
+  value *= 0x7feb352du;
+  value ^= value >> 15;
+  value *= 0x846ca68bu;
+  return value ^ (value >> 16);
+}
+
+int surface_cell_coordinate(float coordinate, float cell_width) {
+  const double value = std::floor(static_cast<double>(coordinate) /
+                                  static_cast<double>(cell_width));
+  if (!std::isfinite(value) ||
+      value <= static_cast<double>(std::numeric_limits<int>::min()) + 1.0 ||
+      value >= static_cast<double>(std::numeric_limits<int>::max()) - 1.0) {
+    throw std::invalid_argument(
+        "CUDA solvent-accessibility coordinate is outside the grid range");
+  }
+  return static_cast<int>(value);
+}
+
+__device__ int find_surface_cell(
+    int x, int y, int z, const int* cell_x, const int* cell_y,
+    const int* cell_z, unsigned int hash_mask) {
+  unsigned int slot = surface_cell_hash(x, y, z) & hash_mask;
+  for (unsigned int probe = 0; probe <= hash_mask; ++probe) {
+    const int stored_x = cell_x[slot];
+    if (stored_x == INT_MIN) return -1;
+    if (stored_x == x && cell_y[slot] == y && cell_z[slot] == z) {
+      return static_cast<int>(slot);
+    }
+    slot = (slot + 1) & hash_mask;
+  }
+  return -1;
+}
+
+__global__ void compute_solvent_accessible_surface_areas(
+    const float* coordinates, const float* radii, int atom_count,
+    float probe_radius, float density, float cell_width,
+    const int* cell_x, const int* cell_y, const int* cell_z,
+    const int* cell_start, const int* cell_count,
+    const int* cell_atom_indices, unsigned int hash_mask,
+    float* surface_areas) {
+  const int atom = static_cast<int>(blockIdx.x);
+  if (atom >= atom_count) return;
+
+  __shared__ unsigned int total_points;
+  __shared__ unsigned int accessible_points;
+  if (threadIdx.x == 0) {
+    total_points = 0;
+    accessible_points = 0;
+  }
+  __syncthreads();
+
+  const float radius = radii[atom];
+  if (!(radius > 0.0f)) {
+    if (threadIdx.x == 0) surface_areas[atom] = 0.0f;
+    return;
+  }
+  const float center_x = coordinates[3 * atom];
+  const float center_y = coordinates[3 * atom + 1];
+  const float center_z = coordinates[3 * atom + 2];
+  const float equatorial_count =
+      2.0f * SURFACE_PI * radius * sqrtf(density);
+  const float vertical_count = 0.5f * equatorial_count;
+  const int vertical_iterations = static_cast<int>(ceilf(vertical_count));
+
+  unsigned int thread_total = 0;
+  unsigned int thread_accessible = 0;
+  for (int latitude = static_cast<int>(threadIdx.x);
+       latitude < vertical_iterations;
+       latitude += static_cast<int>(blockDim.x)) {
+    const float phi = SURFACE_PI * latitude / vertical_count;
+    const float direction_z = cosf(phi);
+    const float xy = sinf(phi);
+    const float horizontal_count = xy * equatorial_count;
+    int horizontal_iterations =
+        static_cast<int>(ceilf(horizontal_count - 1.0f));
+    if (horizontal_iterations < 0) horizontal_iterations = 0;
+    for (int longitude = 0; longitude < horizontal_iterations; ++longitude) {
+      ++thread_total;
+      const float theta =
+          2.0f * SURFACE_PI * longitude / horizontal_count;
+      const float scale = radius + probe_radius;
+      const float probe_x = center_x + scale * xy * cosf(theta);
+      const float probe_y = center_y + scale * xy * sinf(theta);
+      const float probe_z = center_z + scale * direction_z;
+      const int query_x = static_cast<int>(floorf(probe_x / cell_width));
+      const int query_y = static_cast<int>(floorf(probe_y / cell_width));
+      const int query_z = static_cast<int>(floorf(probe_z / cell_width));
+
+      bool intersects = false;
+      for (int dz = -1; dz <= 1 && !intersects; ++dz) {
+        for (int dy = -1; dy <= 1 && !intersects; ++dy) {
+          for (int dx = -1; dx <= 1 && !intersects; ++dx) {
+            const int slot = find_surface_cell(
+                query_x + dx, query_y + dy, query_z + dz,
+                cell_x, cell_y, cell_z, hash_mask);
+            if (slot < 0) continue;
+            const int start = cell_start[slot];
+            const int end = start + cell_count[slot];
+            for (int entry = start; entry < end; ++entry) {
+              const int other = cell_atom_indices[entry];
+              if (other == atom) continue;
+              const float delta_x = probe_x - coordinates[3 * other];
+              const float delta_y = probe_y - coordinates[3 * other + 1];
+              const float delta_z = probe_z - coordinates[3 * other + 2];
+              const float distance2 = delta_x * delta_x +
+                                      delta_y * delta_y +
+                                      delta_z * delta_z;
+              const float exclusion_radius = radii[other] + probe_radius;
+              const float exclusion_radius2 =
+                  exclusion_radius * exclusion_radius;
+              if (fabsf(exclusion_radius2 - distance2) < 0.0001f) continue;
+              if (exclusion_radius2 > distance2) {
+                intersects = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (!intersects) ++thread_accessible;
+    }
+  }
+
+  if (thread_total) atomicAdd(&total_points, thread_total);
+  if (thread_accessible) atomicAdd(&accessible_points, thread_accessible);
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    surface_areas[atom] = total_points == 0
+        ? 0.0f
+        : 4.0f * SURFACE_PI * radius * radius *
+              static_cast<float>(accessible_points) /
+              static_cast<float>(total_points);
+  }
+}
 
 std::vector<double> flatten(
     const std::vector<std::vector<double>>& channels,
@@ -517,6 +679,141 @@ bool cuda_device_available(std::string* reason) {
   }
   if (reason) reason->clear();
   return true;
+}
+
+void solvent_accessible_surface_areas_cuda(
+    const std::vector<float>& coordinates, const std::vector<float>& radii,
+    float probe_radius, float density, std::vector<float>& areas) {
+  if (coordinates.size() != 3 * radii.size()) {
+    throw std::invalid_argument(
+        "CUDA solvent-accessibility coordinates have the wrong size");
+  }
+  if (!(probe_radius > 0.0f) || !std::isfinite(probe_radius)) {
+    throw std::invalid_argument(
+        "CUDA solvent-accessibility probe radius must be positive");
+  }
+  if (!(density > 0.0f) || !std::isfinite(density)) {
+    throw std::invalid_argument(
+        "CUDA solvent-accessibility density must be positive");
+  }
+  if (radii.size() > static_cast<std::size_t>(INT_MAX)) {
+    throw std::invalid_argument(
+        "CUDA solvent-accessibility atom count is too large");
+  }
+
+  areas.assign(radii.size(), 0.0f);
+  if (radii.empty()) return;
+
+  float maximum_radius = 0.0f;
+  for (std::size_t atom = 0; atom < radii.size(); ++atom) {
+    if (!(radii[atom] >= 0.0f) || !std::isfinite(radii[atom])) {
+      throw std::invalid_argument(
+          "CUDA solvent-accessibility radius is invalid");
+    }
+    maximum_radius = std::max(maximum_radius, radii[atom]);
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      if (!std::isfinite(coordinates[3 * atom + axis])) {
+        throw std::invalid_argument(
+            "CUDA solvent-accessibility coordinate is invalid");
+      }
+    }
+  }
+  const float cell_width = maximum_radius + probe_radius;
+
+  std::vector<SurfaceCellAtom> cells(radii.size());
+  for (std::size_t atom = 0; atom < radii.size(); ++atom) {
+    cells[atom] = SurfaceCellAtom{
+        surface_cell_coordinate(coordinates[3 * atom], cell_width),
+        surface_cell_coordinate(coordinates[3 * atom + 1], cell_width),
+        surface_cell_coordinate(coordinates[3 * atom + 2], cell_width),
+        static_cast<int>(atom)};
+  }
+  std::sort(cells.begin(), cells.end(),
+            [](const SurfaceCellAtom& left, const SurfaceCellAtom& right) {
+              if (left.x != right.x) return left.x < right.x;
+              if (left.y != right.y) return left.y < right.y;
+              if (left.z != right.z) return left.z < right.z;
+              return left.atom < right.atom;
+            });
+
+  std::size_t occupied_cell_count = 0;
+  for (std::size_t begin = 0; begin < cells.size();) {
+    ++occupied_cell_count;
+    std::size_t end = begin + 1;
+    while (end < cells.size() && cells[end].x == cells[begin].x &&
+           cells[end].y == cells[begin].y &&
+           cells[end].z == cells[begin].z) {
+      ++end;
+    }
+    begin = end;
+  }
+
+  std::size_t hash_capacity = 1;
+  while (hash_capacity < 2 * occupied_cell_count) {
+    if (hash_capacity >
+        static_cast<std::size_t>(std::numeric_limits<unsigned int>::max()) /
+            2) {
+      throw std::invalid_argument(
+          "CUDA solvent-accessibility grid is too large");
+    }
+    hash_capacity *= 2;
+  }
+  std::vector<int> hash_x(hash_capacity, INT_MIN);
+  std::vector<int> hash_y(hash_capacity, 0);
+  std::vector<int> hash_z(hash_capacity, 0);
+  std::vector<int> hash_start(hash_capacity, -1);
+  std::vector<int> hash_count(hash_capacity, 0);
+  std::vector<int> sorted_atom_indices(cells.size());
+  const unsigned int hash_mask =
+      static_cast<unsigned int>(hash_capacity - 1);
+
+  for (std::size_t begin = 0; begin < cells.size();) {
+    std::size_t end = begin + 1;
+    while (end < cells.size() && cells[end].x == cells[begin].x &&
+           cells[end].y == cells[begin].y &&
+           cells[end].z == cells[begin].z) {
+      ++end;
+    }
+    unsigned int slot = surface_cell_hash(
+        cells[begin].x, cells[begin].y, cells[begin].z) & hash_mask;
+    while (hash_x[slot] != INT_MIN) slot = (slot + 1) & hash_mask;
+    hash_x[slot] = cells[begin].x;
+    hash_y[slot] = cells[begin].y;
+    hash_z[slot] = cells[begin].z;
+    hash_start[slot] = static_cast<int>(begin);
+    hash_count[slot] = static_cast<int>(end - begin);
+    for (std::size_t entry = begin; entry < end; ++entry) {
+      sorted_atom_indices[entry] = cells[entry].atom;
+    }
+    begin = end;
+  }
+
+  workspace.surface_coordinates.copy_from_host(
+      coordinates.data(), coordinates.size());
+  workspace.surface_radii.copy_from_host(radii.data(), radii.size());
+  workspace.surface_cell_x.copy_from_host(hash_x.data(), hash_x.size());
+  workspace.surface_cell_y.copy_from_host(hash_y.data(), hash_y.size());
+  workspace.surface_cell_z.copy_from_host(hash_z.data(), hash_z.size());
+  workspace.surface_cell_start.copy_from_host(
+      hash_start.data(), hash_start.size());
+  workspace.surface_cell_count.copy_from_host(
+      hash_count.data(), hash_count.size());
+  workspace.surface_atom_indices.copy_from_host(
+      sorted_atom_indices.data(), sorted_atom_indices.size());
+  workspace.surface_areas.reserve(radii.size());
+
+  compute_solvent_accessible_surface_areas<<<
+      static_cast<unsigned int>(radii.size()), SURFACE_THREADS>>>(
+      workspace.surface_coordinates.get(), workspace.surface_radii.get(),
+      static_cast<int>(radii.size()), probe_radius, density, cell_width,
+      workspace.surface_cell_x.get(), workspace.surface_cell_y.get(),
+      workspace.surface_cell_z.get(), workspace.surface_cell_start.get(),
+      workspace.surface_cell_count.get(),
+      workspace.surface_atom_indices.get(), hash_mask,
+      workspace.surface_areas.get());
+  check_cuda(cudaGetLastError(),
+             "solvent-accessibility kernel launch");
+  workspace.surface_areas.copy_to_host(areas.data(), areas.size());
 }
 
 void distance_distributions_cuda(

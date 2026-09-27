@@ -20,6 +20,15 @@ namespace internal {
 //! Return true when at least one CUDA device is usable.
 bool cuda_device_available(std::string* reason = nullptr);
 
+//! Compute per-atom solvent-accessible surface areas on the GPU.
+/**
+ * Coordinates are packed xyz triples. A sparse uniform grid restricts each
+ * surface-point intersection test to nearby atoms.
+ */
+void solvent_accessible_surface_areas_cuda(
+    const std::vector<float>& coordinates, const std::vector<float>& radii,
+    float probe_radius, float density, std::vector<float>& areas);
+
 //! Calculate one, three, or six weighted squared-distance histograms.
 /**
  * Coordinates are packed xyz triples. Form factors are channel-major, with

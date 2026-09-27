@@ -5,11 +5,15 @@
 
 #include "utility.h"
 #include "SASurface.h"
+#ifdef FOXS_SAXS_CUDA_LIB
+#include "internal/cuda_helpers.h"
+#endif
 
 #include <cmath>
 #include <fstream>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 
 namespace foxs {
 
@@ -62,8 +66,35 @@ Profile compute_profile(ChemMolecule particles, double min_q,
       average_radius += radius;
     }
 
-    SASurface surface_calculator(particles, 1.8f, 5.0f);
-    surface_calculator.computeASAForAtoms();
+#ifdef FOXS_SAXS_CUDA_LIB
+    if (use_gpu) {
+      std::clog << "calculating solvent accessibility with CUDA" << std::endl;
+      std::vector<float> coordinates;
+      std::vector<float> radii;
+      coordinates.reserve(3 * particles.size());
+      radii.reserve(particles.size());
+      for (const ChemAtom& atom : particles) {
+        coordinates.push_back(atom[0]);
+        coordinates.push_back(atom[1]);
+        coordinates.push_back(atom[2]);
+        radii.push_back(atom.getRadius());
+      }
+      std::vector<float> areas;
+      foxs_cuda::saxs::internal::solvent_accessible_surface_areas_cuda(
+          coordinates, radii, 1.8f, 5.0f, areas);
+      if (areas.size() != particles.size()) {
+        throw std::runtime_error(
+            "CUDA returned an unexpected solvent-accessibility count");
+      }
+      for (std::size_t i = 0; i < particles.size(); ++i) {
+        particles[i].setASA(areas[i]);
+      }
+    } else
+#endif
+    {
+      SASurface surface_calculator(particles, 1.8f, 5.0f);
+      surface_calculator.computeASAForAtoms();
+    }
 
     surface_area.reserve(particles.size());
     for (const ChemAtom& atom : particles) {
